@@ -14,28 +14,22 @@ Pi → proxy (localhost:42100) → Cognition Cloud
 
 ## Install
 
-**Option A — npm (recommended):**
+**Option A — Git (recommended):**
+
+```bash
+pi install git:github.com/drvova/pi-windsurf
+```
+
+**Option B — npm:**
 
 ```bash
 pi install npm:pi-windsurf
 ```
 
-**Option B — Git:**
-
-```bash
-pi install git:github.com/ktappdev/pi-windsurf
-```
-
-**Option B — Manual:**
-
-```bash
-git clone https://github.com/ktappdev/pi-windsurf.git ~/.pi/agent/extensions/windsurf
-```
-
 **Option C — Local dev:**
 
 ```bash
-git clone https://github.com/ktappdev/pi-windsurf.git ~/developer/pi-windsurf
+git clone https://github.com/drvova/pi-windsurf.git ~/developer/pi-windsurf
 pi -e ~/developer/pi-windsurf/index.ts
 ```
 
@@ -70,31 +64,65 @@ Use Pi as normal. Your Windsurf subscription covers API costs.
 | `/windsurf-logout` | Sign out |
 | `/windsurf-refresh` | Refresh model list from Cognition |
 
-## How models update
+## How models work
 
-On startup (and after `/login`), the extension calls Cognition's `GetCliModelConfigs` endpoint — same one the Devin CLI uses. Only models enabled for your plan appear. When Cognition adds new models, restart Pi or run `/windsurf-refresh`.
+On startup (and after `/login`), the extension fetches from three Cognition endpoints in parallel:
+
+1. **`GetCliModelConfigs`** — same endpoint the Devin CLI uses. Returns model labels, UIDs, pricing, promos, context windows, and capabilities.
+2. **`GetCliTeamSettings`** — returns the 96 model UIDs your plan allows. Models not in this list are filtered out.
+3. **`GetCascadeModelConfigs`** — full metadata fallback with context windows, promo statuses, and descriptions.
+
+### Dynamic tags
+
+Model names include tags derived from live API data:
+
+- **`[Free]`** — no pricing info (field 32 absent) = free on your plan
+- **`[Promo]`** — active promotional pricing (from `promo_status` field)
+- **`[New]`** — recently added model
+
+Example: `GLM-5.2 High [Free Promo] (200K)`, `Kimi K2.6 [Free Promo] (262K)`
+
+### Zero hardcoding
+
+- No hardcoded model lists — catalog is fetched live from Cognition
+- No hardcoded context windows — from API field 18 only
+- No hardcoded model fallbacks — empty array when catalog unavailable
+- New models appear automatically on next restart
 
 ## What models?
 
 Depends on your Windsurf plan. Typically includes:
 
-- **Claude** — Opus 4.7/4.6, Sonnet 4.6/4.5, Haiku 4.5
-- **GPT** — 5.5, 5.4, 5.3-Codex, 5.2-Codex
+- **Claude** — Opus 4.8/4.7/4.6, Sonnet 4.6/4.5, Haiku 4.5
+- **GPT** — 5.5, 5.4, 5.3, 5.2, Codex variants
 - **Gemini** — 3.5 Flash, 3.1 Pro
-- **Kimi** — K2.6
-- **DeepSeek** — V4
+- **GLM** — 5.2 (High/Max/No Thinking), 5.1, 4.7-Flash
+- **Kimi** — K2.6, K2.7
 - **SWE** — 1.6, 1.5
+- **DeepSeek** — V4
 - And more — BYOK models, enterprise deployments, experimental releases
+
+## Endpoints
+
+All traffic goes to `server.self-serve.windsurf.com`:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GetUserJwt` | Mint JWT from API key |
+| `GetChatMessage` | Streaming chat completions |
+| `GetCliModelConfigs` | Live model catalog (same as Devin CLI) |
+| `GetCliTeamSettings` | Allowed model UIDs per plan |
+| `GetCascadeModelConfigs` | Full model metadata with promos |
 
 ## Files
 
 ```
-index.ts       Pi extension entry (provider + OAuth)
-proxy.ts       HTTP server (OpenAI → gRPC)
+index.ts       Pi extension entry (provider registration + model building)
+proxy.ts       HTTP server (OpenAI API → gRPC translation)
 chat.ts        Connect-RPC streaming (proto encode/decode)
-catalog.ts     Live model catalog (GetCliModelConfigs + GetCliTeamSettings)
-models.ts      Variant catalog + model resolution
-auth.ts        JWT minting
+catalog.ts     Live model catalog from three Cognition endpoints
+models.ts      Minimal pass-through (catalog is single source of truth)
+auth.ts        JWT minting via GetUserJwt
 metadata.ts    Proto metadata builder
 wire.ts        Proto wire format helpers
 oauth.ts       Login loopback + RegisterUser
@@ -103,7 +131,7 @@ oauth.ts       Login loopback + RegisterUser
 ## Requirements
 
 - Pi (any recent version)
-- Node.js ≥ 18 or Bun
+- Node.js >= 18 or Bun
 - Windsurf account (free or paid)
 
 No npm dependencies. Uses only Node built-ins and Pi's own types.
