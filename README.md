@@ -1,6 +1,10 @@
-# pi-windsurf
+<p align="center">
+  <img src="https://github.com/drvova/pi-mcp-deferred/raw/master/pi-logo-animated.svg" alt="pi-windsurf" width="200">
+</p>
 
-Use Windsurf/Cognition models in [Pi](https://github.com/earendil-works/pi) — Claude, GPT, Gemini, Kimi, DeepSeek, SWE, and more. All via your existing Windsurf subscription. No separate API keys.
+<h1 align="center">pi-windsurf</h1>
+
+<p align="center">Use Windsurf/Cognition models in <a href="https://github.com/earendil-works/pi">Pi</a> — Claude, GPT, Gemini, Kimi, DeepSeek, SWE, and more. All via your existing Windsurf subscription. No separate API keys.</p>
 
 ## How it works
 
