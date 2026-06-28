@@ -140,10 +140,6 @@ oauth.ts       Login loopback + RegisterUser
 
 No npm dependencies. Uses only Node built-ins and Pi's own types.
 
-## Credits
-
-Built on reverse-engineering work from [opencode-windsurf-auth](https://github.com/rsvedant/opencode-windsurf-auth) by @rsvedant. The proxy architecture, proto wire format, and OAuth flow are adapted from that project.
-
 ## License
 
 MIT
