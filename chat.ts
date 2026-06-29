@@ -146,32 +146,36 @@ function normalizeContent(content: string | ContentPart[] | unknown): ContentPar
   return out;
 }
 
-function collapseSystemIntoUser(messages: ChatHistoryItem[]): ChatHistoryItem[] {
-  const out: ChatHistoryItem[] = [];
-  let pendingSystem: string[] = [];
-  const flushText = (c: ContentPart[]): string =>
-    c.filter((p): p is { type: "text"; text: string } => p.type === "text").map(p => p.text).join("\n");
+/**
+ * Separate system messages from conversation messages.
+ * System messages stay as source=1 (user role) — the Windsurf backend has no
+ * separate system role. But they are NOT merged into user content.
+ * Returns the separated messages and the total token estimate of system prefix.
+ */
+function separateSystemMessages(messages: ChatHistoryItem[]): { messages: ChatHistoryItem[]; systemPrefixLen: number } {
+  const systemTexts: string[] = [];
+  const conversation: ChatHistoryItem[] = [];
 
   for (const m of messages) {
     if (m.role === "system") {
       const parts = normalizeContent(m.content);
-      const text = flushText(parts);
-      if (text) pendingSystem.push(text);
-    } else if (m.role === "user" && pendingSystem.length > 0) {
-      const userParts = normalizeContent(m.content);
-      const userText = flushText(userParts);
-      const userImages = userParts.filter(p => p.type === "image");
-      const wrapped = `<system>\n${pendingSystem.join("\n\n")}\n</system>\n${userText}`;
-      out.push({ role: "user", content: [{ type: "text", text: wrapped }, ...userImages] });
-      pendingSystem = [];
+      const text = parts.filter((p): p is { type: "text"; text: string } => p.type === "text").map(p => p.text).join("\n");
+      if (text) systemTexts.push(text);
     } else {
-      out.push(m);
+      conversation.push(m);
     }
   }
-  if (pendingSystem.length > 0) {
-    out.push({ role: "user", content: [{ type: "text", text: `<system>\n${pendingSystem.join("\n\n")}\n</system>` }] });
-  }
-  return out;
+
+  // Prepend system messages as source=1 entries (what the binary does)
+  const systemItems: ChatHistoryItem[] = systemTexts.map(text => ({
+    role: "system" as const,
+    content: text,
+  }));
+
+  // Token estimate: ~4 chars per token (same heuristic as encodeChatMessagePrompt field 4)
+  const systemPrefixLen = systemTexts.reduce((sum, text) => sum + Math.max(1, Math.floor(text.length / 4)), 0);
+
+  return { messages: [...systemItems, ...conversation], systemPrefixLen };
 }
 
 // ----------------------------------------------------------------------------
@@ -273,6 +277,7 @@ interface BuildArgs {
   tools?: ToolDef[]; requestType?: number;
   completionOpts?: { maxOutputTokens?: number; maxInputTokens?: number; temperature?: number; topK?: number; topP?: number; };
   inferenceConfig?: InferenceConfig;
+  systemPrefixLen?: number;
 }
 
 function buildGetChatMessageRequest(args: BuildArgs): Buffer {
@@ -280,8 +285,8 @@ function buildGetChatMessageRequest(args: BuildArgs): Buffer {
     apiKey: args.apiKey, userJwt: args.userJwt, assignmentJwt: args.assignmentJwt,
     sessionId: args.sessionId, requestId: args.requestId, triggerId: args.triggerId,
   });
-  const collapsed = collapseSystemIntoUser(args.messages);
-  const promptParts = collapsed.map((m) =>
+  const { messages: separated, systemPrefixLen } = separateSystemMessages(args.messages);
+  const promptParts = separated.map((m) =>
     encodeMessage(3, encodeChatMessagePrompt(
       normalizeContent(m.content),
       SOURCE_BY_ROLE[m.role] ?? 1,
@@ -299,6 +304,7 @@ function buildGetChatMessageRequest(args: BuildArgs): Buffer {
     encodeString(16, args.cascadeId),
     encodeString(21, args.modelUid),
     encodeString(22, args.promptId),
+    ...(systemPrefixLen > 0 ? [encodeVarintField(11, systemPrefixLen)] : []),
   ]);
 }
 
