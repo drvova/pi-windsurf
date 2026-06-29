@@ -3,7 +3,7 @@
  */
 import { encodeMessage, encodeString, encodeTimestampBody, encodeVarintField } from "./wire";
 
-const WINDSURF_VERSION_STRING = "2.0.0";
+const WINDSURF_VERSION_STRING = "2026.8.18";
 
 export interface MetadataInput {
   apiKey: string;
