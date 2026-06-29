@@ -79,28 +79,14 @@ async function lookupCatalogMeta(apiKey: string, apiServerUrl: string, modelUid:
 /** Serialize ResponseMeta into a JSON-safe object for the proxy response. */
 function serializeResponseMeta(meta: ResponseMeta): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  if (meta.actualModelUid !== undefined) out["actual_model_uid"] = meta.actualModelUid;
   if (meta.outputId !== undefined) out["output_id"] = meta.outputId;
   if (meta.requestId !== undefined) out["request_id"] = meta.requestId;
-  if (meta.messageId !== undefined) out["message_id"] = meta.messageId;
-  if (meta.creditCost !== undefined) out["credit_cost"] = meta.creditCost;
-  if (meta.committedCreditCost !== undefined) out["committed_credit_cost"] = meta.committedCreditCost;
-  if (meta.committedAcuCost !== undefined) out["committed_acu_cost"] = meta.committedAcuCost;
-  if (meta.committedOverageCostCents !== undefined) out["committed_overage_cost_cents"] = meta.committedOverageCostCents;
-  if (meta.committedQuotaCostBasisPoints !== undefined) out["committed_quota_cost_basis_points"] = meta.committedQuotaCostBasisPoints;
-  if (meta.latency) out["latency"] = meta.latency;
   if (meta.timestamp) out["timestamp"] = meta.timestamp;
-  if (meta.arenaInvocationCapReached !== undefined) out["arena_invocation_cap_reached"] = meta.arenaInvocationCapReached;
-  if (meta.thinkingRedacted !== undefined) out["thinking_redacted"] = meta.thinkingRedacted;
   if (meta.phase !== undefined) out["phase"] = meta.phase;
-  if (meta.deltaTokens !== undefined) out["delta_tokens"] = meta.deltaTokens;
-  if (meta.prompt !== undefined) out["prompt"] = meta.prompt;
-  if (meta.redact !== undefined) out["redact"] = meta.redact;
-  if (meta.thinkingId !== undefined) out["thinking_id"] = meta.thinkingId;
-  if (meta.geminiThoughtSignature !== undefined) out["gemini_thought_signature"] = meta.geminiThoughtSignature;
-  if (meta.deltaSignature !== undefined) out["delta_signature"] = meta.deltaSignature;
-  if (meta.deltaSignatureType !== undefined) out["delta_signature_type"] = meta.deltaSignatureType;
-  // Include raw unknown fields as hex-tagged entries for debugging
+  if (meta.actualModelUid !== undefined) out["actual_model_uid"] = meta.actualModelUid;
+  if (meta.messageId !== undefined) out["message_id"] = meta.messageId;
+  if (meta.inputTokens !== undefined) out["input_tokens"] = meta.inputTokens;
+  if (meta.outputTokens !== undefined) out["output_tokens"] = meta.outputTokens;
   if (meta.rawUnknown.size > 0) {
     const raw: Record<string, unknown> = {};
     for (const [num, val] of meta.rawUnknown) {

@@ -51,27 +51,14 @@ export type CloudChatEvent =
   | { kind: "meta"; fields: ResponseMeta };
 
 export interface ResponseMeta {
-  actualModelUid?: string;
   outputId?: string;
   requestId?: string;
-  messageId?: string;
-  creditCost?: number;
-  committedCreditCost?: number;
-  committedAcuCost?: number;
-  committedOverageCostCents?: number;
-  committedQuotaCostBasisPoints?: number;
-  latency?: { seconds?: number; nanos?: number };
   timestamp?: { seconds?: number; nanos?: number };
-  arenaInvocationCapReached?: boolean;
-  thinkingRedacted?: boolean;
   phase?: number;
-  deltaTokens?: number;
-  prompt?: string;
-  redact?: boolean;
-  thinkingId?: string;
-  geminiThoughtSignature?: string;
-  deltaSignature?: string;
-  deltaSignatureType?: number;
+  actualModelUid?: string;
+  messageId?: string;
+  inputTokens?: number;
+  outputTokens?: number;
   rawUnknown: Map<number, { wire: number; str?: string; num?: number; bool?: boolean; buf?: Buffer }>;
 }
 
@@ -355,20 +342,36 @@ function* decodeChatFrame(proto: Buffer): Generator<CloudChatEvent> {
       const usage = decodeUsageBlock(f.value as Buffer);
       if (usage) yield usage;
     } else {
-      // Capture all remaining fields by proto field number + wire type
+      // Capture identified fields by proto field number
       hasMeta = true;
-      if (f.wire === 2 && Buffer.isBuffer(f.value)) {
-        const s = (f.value as Buffer).toString("utf8");
-        // String fields we can identify by content heuristic
-        if (/^[a-zA-Z0-9_:-]+$/.test(s) && s.length < 200) {
-          // Could be a UID, ID, or short string — store generically
-          meta.rawUnknown.set(f.num, { wire: f.wire, str: s });
-        } else {
-          meta.rawUnknown.set(f.num, { wire: f.wire, buf: f.value as Buffer });
+      if (f.num === 1 && f.wire === 2 && Buffer.isBuffer(f.value)) {
+        meta.outputId = (f.value as Buffer).toString("utf8");
+      } else if (f.num === 2 && f.wire === 2 && Buffer.isBuffer(f.value)) {
+        // Timestamp sub-message: field 1 = seconds, field 2 = nanos
+        for (const sf of iterFields(f.value as Buffer)) {
+          if (sf.num === 1 && sf.wire === 0) meta.timestamp = { ...meta.timestamp, seconds: Number(sf.value) };
+          else if (sf.num === 2 && sf.wire === 0) meta.timestamp = { ...meta.timestamp, nanos: Number(sf.value) };
         }
-      } else if (f.wire === 0) {
-        const v = Number(f.value);
-        meta.rawUnknown.set(f.num, { wire: f.wire, num: v, bool: v === 0 || v === 1 ? v === 1 : undefined });
+      } else if (f.num === 4 && f.wire === 0) {
+        meta.phase = Number(f.value);
+      } else if (f.num === 7 && f.wire === 2 && Buffer.isBuffer(f.value)) {
+        // completion_profile sub-message
+        for (const sf of iterFields(f.value as Buffer)) {
+          if (sf.num === 2 && sf.wire === 0) meta.inputTokens = Number(sf.value);
+          else if (sf.num === 3 && sf.wire === 0) meta.outputTokens = Number(sf.value);
+          else if (sf.num === 7 && sf.wire === 2 && Buffer.isBuffer(sf.value)) meta.messageId = (sf.value as Buffer).toString("utf8");
+          else if (sf.num === 9 && sf.wire === 2 && Buffer.isBuffer(sf.value)) meta.actualModelUid = (sf.value as Buffer).toString("utf8");
+        }
+      } else if (f.num === 17 && f.wire === 2 && Buffer.isBuffer(f.value)) {
+        meta.requestId = (f.value as Buffer).toString("utf8");
+      } else {
+        // Store remaining unknown fields generically
+        if (f.wire === 2 && Buffer.isBuffer(f.value)) {
+          meta.rawUnknown.set(f.num, { wire: f.wire, buf: f.value as Buffer });
+        } else if (f.wire === 0) {
+          const v = Number(f.value);
+          meta.rawUnknown.set(f.num, { wire: f.wire, num: v, bool: v === 0 || v === 1 ? v === 1 : undefined });
+        }
       }
     }
   }
