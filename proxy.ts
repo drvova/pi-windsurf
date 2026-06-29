@@ -7,7 +7,7 @@
  */
 import * as crypto from "crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
-import { streamChatEvents, CloudChatError, type ChatHistoryItem, type ToolDef } from "./chat";
+import { streamChatEvents, CloudChatError, type ChatHistoryItem, type ToolDef, type ResponseMeta } from "./chat";
 import { resolveModelOrPassthrough, getDefaultModel, getCanonicalModels } from "./models";
 import { loadCredentials } from "./oauth";
 import { getCachedCatalog, type InferenceConfig } from "./catalog";
@@ -74,6 +74,45 @@ async function lookupCatalogMeta(apiKey: string, apiServerUrl: string, modelUid:
     }
   } catch {}
   return {};
+}
+
+/** Serialize ResponseMeta into a JSON-safe object for the proxy response. */
+function serializeResponseMeta(meta: ResponseMeta): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (meta.actualModelUid !== undefined) out["actual_model_uid"] = meta.actualModelUid;
+  if (meta.outputId !== undefined) out["output_id"] = meta.outputId;
+  if (meta.requestId !== undefined) out["request_id"] = meta.requestId;
+  if (meta.messageId !== undefined) out["message_id"] = meta.messageId;
+  if (meta.creditCost !== undefined) out["credit_cost"] = meta.creditCost;
+  if (meta.committedCreditCost !== undefined) out["committed_credit_cost"] = meta.committedCreditCost;
+  if (meta.committedAcuCost !== undefined) out["committed_acu_cost"] = meta.committedAcuCost;
+  if (meta.committedOverageCostCents !== undefined) out["committed_overage_cost_cents"] = meta.committedOverageCostCents;
+  if (meta.committedQuotaCostBasisPoints !== undefined) out["committed_quota_cost_basis_points"] = meta.committedQuotaCostBasisPoints;
+  if (meta.latency) out["latency"] = meta.latency;
+  if (meta.timestamp) out["timestamp"] = meta.timestamp;
+  if (meta.arenaInvocationCapReached !== undefined) out["arena_invocation_cap_reached"] = meta.arenaInvocationCapReached;
+  if (meta.thinkingRedacted !== undefined) out["thinking_redacted"] = meta.thinkingRedacted;
+  if (meta.phase !== undefined) out["phase"] = meta.phase;
+  if (meta.deltaTokens !== undefined) out["delta_tokens"] = meta.deltaTokens;
+  if (meta.prompt !== undefined) out["prompt"] = meta.prompt;
+  if (meta.redact !== undefined) out["redact"] = meta.redact;
+  if (meta.thinkingId !== undefined) out["thinking_id"] = meta.thinkingId;
+  if (meta.geminiThoughtSignature !== undefined) out["gemini_thought_signature"] = meta.geminiThoughtSignature;
+  if (meta.deltaSignature !== undefined) out["delta_signature"] = meta.deltaSignature;
+  if (meta.deltaSignatureType !== undefined) out["delta_signature_type"] = meta.deltaSignatureType;
+  // Include raw unknown fields as hex-tagged entries for debugging
+  if (meta.rawUnknown.size > 0) {
+    const raw: Record<string, unknown> = {};
+    for (const [num, val] of meta.rawUnknown) {
+      const key = `field_${num}`;
+      if (val.str !== undefined) raw[key] = val.str;
+      else if (val.num !== undefined) raw[key] = val.num;
+      else if (val.bool !== undefined) raw[key] = val.bool;
+      else if (val.buf) raw[key] = `<${val.buf.length} bytes>`;
+    }
+    out["_raw_unknown"] = raw;
+  }
+  return out;
 }
 
 function openAIError(status: number, message: string, details?: string): object {
@@ -208,6 +247,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           let lastToolCallId: string | undefined;
           let finishReason: "stop" | "tool_calls" | "length" | "content_filter" | null = null;
           let usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null = null;
+          let responseMeta: ResponseMeta | null = null;
 
           for await (const ev of streamChatEvents({
             apiKey: creds.apiKey,
@@ -249,6 +289,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
               finishReason = ev.reason;
             } else if (ev.kind === "usage") {
               usage = { promptTokens: ev.promptTokens, completionTokens: ev.completionTokens, totalTokens: ev.totalTokens };
+            } else if (ev.kind === "meta") {
+              responseMeta = ev.fields;
             }
           }
 
@@ -257,7 +299,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
 
           if (usage) {
-            const usageChunk = { id: responseId, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: requestedModel, choices: [], usage: { prompt_tokens: usage.promptTokens ?? 0, completion_tokens: usage.completionTokens ?? 0, total_tokens: usage.totalTokens ?? 0 } };
+            const usageChunk: Record<string, unknown> = { id: responseId, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: requestedModel, choices: [], usage: { prompt_tokens: usage.promptTokens ?? 0, completion_tokens: usage.completionTokens ?? 0, total_tokens: usage.totalTokens ?? 0 } };
+            if (responseMeta) usageChunk["_windsurf_meta"] = serializeResponseMeta(responseMeta);
             res.write(`data: ${JSON.stringify(usageChunk)}\n\n`);
           }
           res.write("data: [DONE]\n\n");
@@ -277,6 +320,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         let collected = "";
         let finishReason: "stop" | "tool_calls" | "length" | "content_filter" = "stop";
         let usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null = null;
+        let responseMeta: ResponseMeta | null = null;
         type CollectedToolCall = { id: string; name: string; args: string };
         const collectedToolCalls: CollectedToolCall[] = [];
         let currentToolCall: CollectedToolCall | null = null;
@@ -298,6 +342,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           else if (ev.kind === "tool_call_args") { if (currentToolCall) currentToolCall.args += ev.argsDelta; }
           else if (ev.kind === "finish") finishReason = ev.reason;
           else if (ev.kind === "usage") usage = { promptTokens: ev.promptTokens, completionTokens: ev.completionTokens, totalTokens: ev.totalTokens };
+          else if (ev.kind === "meta") responseMeta = ev.fields;
         }
         if (collectedToolCalls.length > 0 && finishReason === "stop") finishReason = "tool_calls";
 
@@ -305,7 +350,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           ? { role: "assistant" as const, content: collected, tool_calls: collectedToolCalls.map(tc => ({ id: tc.id, type: "function" as const, function: { name: tc.name, arguments: tc.args } })) }
           : { role: "assistant" as const, content: collected };
 
-        const resp = {
+        const resp: Record<string, unknown> = {
           id: `chatcmpl-${crypto.randomUUID()}`,
           object: "chat.completion",
           created: Math.floor(Date.now() / 1000),
@@ -313,6 +358,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           choices: [{ index: 0, message: assistantMessage, finish_reason: finishReason }],
           ...(usage ? { usage: { prompt_tokens: usage.promptTokens ?? 0, completion_tokens: usage.completionTokens ?? 0, total_tokens: usage.totalTokens ?? 0 } } : {}),
         };
+        if (responseMeta) resp["_windsurf_meta"] = serializeResponseMeta(responseMeta);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(resp));
       }

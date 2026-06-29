@@ -47,7 +47,33 @@ export type CloudChatEvent =
   | { kind: "tool_call_args"; argsDelta: string; id?: string }
   | { kind: "finish"; reason: "stop" | "tool_calls" | "length" | "content_filter" }
   | { kind: "usage"; promptTokens?: number; completionTokens?: number; totalTokens?: number;
-      cachedInputTokens?: number; cacheCreationInputTokens?: number; reasoningTokens?: number; };
+      cachedInputTokens?: number; cacheCreationInputTokens?: number; reasoningTokens?: number; }
+  | { kind: "meta"; fields: ResponseMeta };
+
+export interface ResponseMeta {
+  actualModelUid?: string;
+  outputId?: string;
+  requestId?: string;
+  messageId?: string;
+  creditCost?: number;
+  committedCreditCost?: number;
+  committedAcuCost?: number;
+  committedOverageCostCents?: number;
+  committedQuotaCostBasisPoints?: number;
+  latency?: { seconds?: number; nanos?: number };
+  timestamp?: { seconds?: number; nanos?: number };
+  arenaInvocationCapReached?: boolean;
+  thinkingRedacted?: boolean;
+  phase?: number;
+  deltaTokens?: number;
+  prompt?: string;
+  redact?: boolean;
+  thinkingId?: string;
+  geminiThoughtSignature?: string;
+  deltaSignature?: string;
+  deltaSignatureType?: number;
+  rawUnknown: Map<number, { wire: number; str?: string; num?: number; bool?: boolean; buf?: Buffer }>;
+}
 
 export interface CloudChatRequest {
   apiKey: string;
@@ -294,6 +320,9 @@ function buildGetChatMessageRequest(args: BuildArgs): Buffer {
 // ----------------------------------------------------------------------------
 
 function* decodeChatFrame(proto: Buffer): Generator<CloudChatEvent> {
+  const meta: ResponseMeta = { rawUnknown: new Map() };
+  let hasMeta = false;
+
   for (const f of iterFields(proto)) {
     if (f.num === 3 && f.wire === 2 && Buffer.isBuffer(f.value)) {
       const s = (f.value as Buffer).toString("utf8");
@@ -325,8 +354,26 @@ function* decodeChatFrame(proto: Buffer): Generator<CloudChatEvent> {
     } else if (f.num === 28 && f.wire === 2 && Buffer.isBuffer(f.value)) {
       const usage = decodeUsageBlock(f.value as Buffer);
       if (usage) yield usage;
+    } else {
+      // Capture all remaining fields by proto field number + wire type
+      hasMeta = true;
+      if (f.wire === 2 && Buffer.isBuffer(f.value)) {
+        const s = (f.value as Buffer).toString("utf8");
+        // String fields we can identify by content heuristic
+        if (/^[a-zA-Z0-9_:-]+$/.test(s) && s.length < 200) {
+          // Could be a UID, ID, or short string — store generically
+          meta.rawUnknown.set(f.num, { wire: f.wire, str: s });
+        } else {
+          meta.rawUnknown.set(f.num, { wire: f.wire, buf: f.value as Buffer });
+        }
+      } else if (f.wire === 0) {
+        const v = Number(f.value);
+        meta.rawUnknown.set(f.num, { wire: f.wire, num: v, bool: v === 0 || v === 1 ? v === 1 : undefined });
+      }
     }
   }
+
+  if (hasMeta) yield { kind: "meta", fields: meta };
 }
 
 function decodeUsageBlock(buf: Buffer): CloudChatEvent | null {
