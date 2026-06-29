@@ -39,11 +39,21 @@ export interface ModelFeatures {
   addCursorToFindReplaceTarget?: boolean;
 }
 
-export type InferenceConfig =
-  | { kind: "anthropic"; effort?: string; thinking?: string; fastMode?: boolean; context1m?: boolean }
-  | { kind: "google"; reasoningEffort?: string; reasoningContext?: string }
-  | { kind: "openai"; extendedPromptCacheRetention?: number; serviceTier?: string }
-  | { kind: "none" };
+/** Generic InferenceConfig — oneof variant number maps to raw proto fields. No hardcoded provider names. */
+export interface InferenceConfigField {
+  /** Proto wire type: 0=varint, 2=length-delimited */
+  wire: 0 | 2;
+  /** String value (wire=2) or number value (wire=0) */
+  str?: string;
+  num?: number;
+  bool?: boolean;
+}
+export interface InferenceConfig {
+  /** Oneof variant field number from proto (1=first, 2=second, etc.) */
+  variant: number;
+  /** Raw proto fields keyed by field number within the variant sub-message */
+  fields: Map<number, InferenceConfigField>;
+}
 
 export interface ModelCatalogEntry {
   modelUid: string;
@@ -326,43 +336,24 @@ function decodeModelFeatures(buf: Buffer): ModelFeatures {
 }
 
 function decodeInferenceConfig(buf: Buffer): InferenceConfig | undefined {
-  // InferenceConfig is a oneof: field 1 = Anthropic, field 2 = Google, field 3 = OpenAi
+  // InferenceConfig is a oneof — whichever field number appears is the active variant.
+  // We decode generically: variant = the oneof field num, fields = raw sub-message fields.
   for (const sf of iterFields(buf)) {
     if (sf.wire !== 2 || !Buffer.isBuffer(sf.value)) continue;
-    if (sf.num === 1) return decodeAnthropicConfig(sf.value as Buffer);
-    if (sf.num === 2) return decodeGoogleConfig(sf.value as Buffer);
-    if (sf.num === 3) return decodeOpenAiConfig(sf.value as Buffer);
+    const variant = sf.num;
+    const fields = new Map<number, InferenceConfigField>();
+    for (const ssf of iterFields(sf.value as Buffer)) {
+      if (ssf.wire === 0) {
+        const v = Number(ssf.value);
+        // Heuristic: 0/1 → bool, else number
+        fields.set(ssf.num, ssf.value === 0n || ssf.value === 1n ? { wire: 0, bool: ssf.value === 1n } : { wire: 0, num: v });
+      } else if (ssf.wire === 2 && Buffer.isBuffer(ssf.value)) {
+        fields.set(ssf.num, { wire: 2, str: (ssf.value as Buffer).toString("utf8") });
+      }
+    }
+    return { variant, fields };
   }
   return undefined;
-}
-
-function decodeAnthropicConfig(buf: Buffer): InferenceConfig {
-  const cfg: { kind: "anthropic"; effort?: string; thinking?: string; fastMode?: boolean; context1m?: boolean } = { kind: "anthropic" };
-  for (const sf of iterFields(buf)) {
-    if (sf.num === 1 && sf.wire === 2 && Buffer.isBuffer(sf.value)) cfg.effort = (sf.value as Buffer).toString("utf8");
-    else if (sf.num === 2 && sf.wire === 2 && Buffer.isBuffer(sf.value)) cfg.thinking = (sf.value as Buffer).toString("utf8");
-    else if (sf.num === 3 && sf.wire === 0) cfg.fastMode = sf.value === 1n;
-    else if (sf.num === 4 && sf.wire === 0) cfg.context1m = sf.value === 1n;
-  }
-  return cfg;
-}
-
-function decodeGoogleConfig(buf: Buffer): InferenceConfig {
-  const cfg: { kind: "google"; reasoningEffort?: string; reasoningContext?: string } = { kind: "google" };
-  for (const sf of iterFields(buf)) {
-    if (sf.num === 1 && sf.wire === 2 && Buffer.isBuffer(sf.value)) cfg.reasoningEffort = (sf.value as Buffer).toString("utf8");
-    else if (sf.num === 2 && sf.wire === 2 && Buffer.isBuffer(sf.value)) cfg.reasoningContext = (sf.value as Buffer).toString("utf8");
-  }
-  return cfg;
-}
-
-function decodeOpenAiConfig(buf: Buffer): InferenceConfig {
-  const cfg: { kind: "openai"; extendedPromptCacheRetention?: number; serviceTier?: string } = { kind: "openai" };
-  for (const sf of iterFields(buf)) {
-    if (sf.num === 1 && sf.wire === 0) cfg.extendedPromptCacheRetention = Number(sf.value);
-    else if (sf.num === 2 && sf.wire === 2 && Buffer.isBuffer(sf.value)) cfg.serviceTier = (sf.value as Buffer).toString("utf8");
-  }
-  return cfg;
 }
 
 export class ModelNotAvailableError extends Error {

@@ -233,7 +233,7 @@ function encodeCompletionConfiguration(opts: {
   ];
 
   // Encode per-provider InferenceConfig as a sub-message on field 9
-  if (inferenceConfig && inferenceConfig.kind !== "none") {
+  if (inferenceConfig) {
     parts.push(encodeMessage(9, encodeInferenceConfigBody(inferenceConfig)));
   }
 
@@ -241,30 +241,17 @@ function encodeCompletionConfiguration(opts: {
 }
 
 function encodeInferenceConfigBody(cfg: InferenceConfig): Buffer {
-  if (cfg.kind === "anthropic") {
-    const sub: Buffer[] = [];
-    if (cfg.effort) sub.push(encodeString(1, cfg.effort));
-    if (cfg.thinking) sub.push(encodeString(2, cfg.thinking));
-    if (cfg.fastMode !== undefined) sub.push(encodeVarintField(3, cfg.fastMode ? 1 : 0));
-    if (cfg.context1m !== undefined) sub.push(encodeVarintField(4, cfg.context1m ? 1 : 0));
-    // Anthropic is oneof field 1 in InferenceConfig
-    return encodeMessage(1, Buffer.concat(sub));
+  // Generic encoding: variant is the oneof field number, fields are raw proto fields.
+  const subParts: Buffer[] = [];
+  for (const [fieldNum, field] of cfg.fields) {
+    if (field.wire === 0) {
+      subParts.push(encodeVarintField(fieldNum, field.bool ? 1 : (field.num ?? 0)));
+    } else if (field.wire === 2 && field.str !== undefined) {
+      subParts.push(encodeString(fieldNum, field.str));
+    }
   }
-  if (cfg.kind === "google") {
-    const sub: Buffer[] = [];
-    if (cfg.reasoningEffort) sub.push(encodeString(1, cfg.reasoningEffort));
-    if (cfg.reasoningContext) sub.push(encodeString(2, cfg.reasoningContext));
-    // Google is oneof field 2 in InferenceConfig
-    return encodeMessage(2, Buffer.concat(sub));
-  }
-  if (cfg.kind === "openai") {
-    const sub: Buffer[] = [];
-    if (cfg.extendedPromptCacheRetention !== undefined) sub.push(encodeVarintField(1, cfg.extendedPromptCacheRetention));
-    if (cfg.serviceTier) sub.push(encodeString(2, cfg.serviceTier));
-    // OpenAi is oneof field 3 in InferenceConfig
-    return encodeMessage(3, Buffer.concat(sub));
-  }
-  return Buffer.alloc(0);
+  // Wrap in the oneof variant field number
+  return encodeMessage(cfg.variant, Buffer.concat(subParts));
 }
 
 interface BuildArgs {
