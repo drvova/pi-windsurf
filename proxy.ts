@@ -77,7 +77,7 @@ async function lookupCatalogMeta(apiKey: string, apiServerUrl: string, modelUid:
 }
 
 /** Serialize ResponseMeta into a JSON-safe object for the proxy response. */
-function serializeResponseMeta(meta: ResponseMeta): Record<string, unknown> {
+export function serializeResponseMeta(meta: ResponseMeta): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (meta.outputId !== undefined) out["output_id"] = meta.outputId;
   if (meta.requestId !== undefined) out["request_id"] = meta.requestId;
