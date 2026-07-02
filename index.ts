@@ -8,6 +8,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks, ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { startProxy, stopProxy, PROXY_SECRET, setProxyCredentials, getResponseMeta, serializeResponseMeta } from "./proxy";
 import { loadCredentials, saveCredentials, deleteCredentials, DEFAULT_REGION, runLoginLoopback, registerUser, type PersistedCredentials } from "./oauth";
 import { clearCachedUserJwt } from "./auth";
@@ -234,6 +235,44 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
+  // -- registerTool: windsurf_status — LLM-callable tool to query plan/quota --
+  pi.registerTool({
+    name: "windsurf_status",
+    label: "Windsurf Status",
+    description: "Query current Windsurf account status: plan, credits, daily/weekly quota, and feature availability.",
+    promptSnippet: "Query Windsurf account status (plan, credits, quota)",
+    promptGuidelines: ["Use windsurf_status when the user asks about their Windsurf plan, credits, quota, or account status."],
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
+      const c = loadCredentials();
+      if (!c) {
+        return { content: [{ type: "text", text: "Not signed in to Windsurf. Run /login windsurf first." }], details: {} };
+      }
+      try {
+        const status = await getUserStatus(c.apiKey, c.apiServerUrl);
+        const lines: string[] = [];
+        lines.push(`Plan: ${status.planName ?? "unknown"}${status.isPro ? " (Pro)" : ""}${status.isTeams ? " (Teams)" : ""}${status.isEnterprise ? " (Enterprise)" : ""}`);
+        if (status.availablePromptCredits !== undefined && status.monthlyPromptCredits !== undefined) {
+          lines.push(`Prompt credits: ${status.availablePromptCredits} / ${status.monthlyPromptCredits}`);
+        }
+        if (status.availableFlowCredits !== undefined && status.monthlyFlowCredits !== undefined) {
+          lines.push(`Flow credits: ${status.availableFlowCredits} / ${status.monthlyFlowCredits}`);
+        }
+        if (status.dailyQuotaRemainingPercent !== undefined) {
+          lines.push(`Daily quota: ${status.dailyQuotaRemainingPercent}% remaining`);
+        }
+        if (status.weeklyQuotaRemainingPercent !== undefined) {
+          lines.push(`Weekly quota: ${status.weeklyQuotaRemainingPercent}% remaining`);
+        }
+        if (status.canUseCascade === false) lines.push("Cascade: disabled");
+        if (status.canUseCli === false) lines.push("CLI: disabled");
+        return { content: [{ type: "text", text: lines.join("\n") }], details: {} };
+      } catch (e) {
+        return { content: [{ type: "text", text: `Failed to fetch Windsurf status: ${e instanceof Error ? e.message : String(e)}` }], details: {} };
+      }
+    },
+  });
+
   // -- appendEntry: persist Windsurf status in session (no LLM context pollution) --
   let _lastStatusEntry: Record<string, unknown> | null = null;
 
@@ -379,6 +418,27 @@ export default async function (pi: ExtensionAPI) {
         metadata: { ...(event.message as any).metadata, windsurf: serializeResponseMeta(meta) },
       },
     };
+  });
+
+  // -- context: filter/modify messages before each LLM call --
+  pi.on("context", async (event, ctx) => {
+    if (ctx.model?.provider !== "windsurf") return;
+    const messages = event.messages;
+    // Remove old windsurf-context messages from earlier turns (keep only the last one)
+    let lastContextIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i] as any;
+      if (m.role === "user" && m.customType === "windsurf-context") {
+        if (lastContextIdx === -1) {
+          lastContextIdx = i;
+        } else {
+          // Mark earlier ones for removal by splicing
+          messages.splice(i, 1);
+        }
+      }
+    }
+    // If we removed any, the indices shifted — but we only removed before lastContextIdx so it's stable
+    return { messages };
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
