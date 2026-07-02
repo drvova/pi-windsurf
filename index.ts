@@ -182,5 +182,17 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("session_shutdown", async () => { _pi = null; stopProxy(); });
+  // Show resolved model info in the status bar
+  pi.on("model_select", async (event, ctx) => {
+    const m = event.model;
+    if (m?.id && m.provider === "windsurf") {
+      ctx.ui.setStatus("windsurf", m.id);
+    }
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    ctx.ui.setStatus("windsurf", undefined);
+    _pi = null;
+    stopProxy();
+  });
 }
