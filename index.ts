@@ -190,6 +190,22 @@ export default async function (pi: ExtensionAPI) {
     }
   });
 
+  // Show thinking status during requests, clear on completion
+  pi.on("before_provider_request", async (_event, ctx) => {
+    if (ctx.model?.provider === "windsurf") {
+      ctx.ui.setWorkingMessage(`windsurf ${ctx.model.id} ...`);
+    }
+  });
+
+  pi.on("after_provider_response", async (event, ctx) => {
+    if (ctx.model?.provider === "windsurf") {
+      ctx.ui.setWorkingMessage();
+      if (event.status < 200 || event.status >= 300) {
+        ctx.ui.notify(`Windsurf error: HTTP ${event.status}`, "error");
+      }
+    }
+  });
+
   pi.on("session_shutdown", async (_event, ctx) => {
     ctx.ui.setStatus("windsurf", undefined);
     _pi = null;
