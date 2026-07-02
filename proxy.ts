@@ -218,9 +218,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
       const requestedModel = requestBody.model || getDefaultModel();
       const variantOverride = extractVariantFromProviderOptions(requestBody.providerOptions);
-      // Resolve model: base name → UID, then apply thinking variant if provided
       const resolved = await resolveModelName(requestedModel, creds.apiKey, creds.apiServerUrl, variantOverride);
-
 
       const tools: ToolDef[] = (requestBody.tools ?? []).map(t => ({
         name: t.function?.name ?? "unknown",
@@ -232,11 +230,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const requestedMaxTokens = typeof requestBody.max_tokens === "number" && requestBody.max_tokens > 0 ? requestBody.max_tokens : 128_000;
       const isStreaming = requestBody.stream !== false;
 
-      const catalogMeta = await lookupCatalogMeta(creds.apiKey, creds.apiServerUrl, resolved.modelUid);
-
-      // Strip image parts if model doesn't support images
-      const catalogEntry = (await getCachedCatalog(creds.apiKey, creds.apiServerUrl))?.byUid.get(resolved.modelUid);
-      const modelSupportsImages = catalogEntry?.features?.supportsImageCaptions !== false;
+      // Parallel: catalogMeta and catalogEntry are independent lookups
+      const [catalogMeta, catalogEntry] = await Promise.all([
+        lookupCatalogMeta(creds.apiKey, creds.apiServerUrl, resolved.modelUid),
+        getCachedCatalog(creds.apiKey, creds.apiServerUrl),
+      ]);
+      const modelCatalogEntry = catalogEntry?.byUid.get(resolved.modelUid);
+      const modelSupportsImages = modelCatalogEntry?.features?.supportsImageCaptions !== false;
       if (!modelSupportsImages) {
         for (const m of multimodalMessages) {
           if (Array.isArray(m.content)) {
@@ -418,8 +418,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
       const requestedModel = anthroBody.model || getDefaultModel();
       const resolved = await resolveModelName(requestedModel, creds.apiKey, creds.apiServerUrl);
-      const catalogMeta = await lookupCatalogMeta(creds.apiKey, creds.apiServerUrl, resolved.modelUid);
-      const catalogEntry = (await getCachedCatalog(creds.apiKey, creds.apiServerUrl))?.byUid.get(resolved.modelUid);
+      const [catalogMeta, catalog] = await Promise.all([
+        lookupCatalogMeta(creds.apiKey, creds.apiServerUrl, resolved.modelUid),
+        getCachedCatalog(creds.apiKey, creds.apiServerUrl),
+      ]);
+      const catalogEntry = catalog?.byUid.get(resolved.modelUid);
       const catalogMaxTokens = catalogEntry?.maxOutputTokens && catalogEntry.maxOutputTokens > 0 ? catalogEntry.maxOutputTokens : 128_000;
 
       // Convert Anthropic messages to ChatHistoryItem[]
