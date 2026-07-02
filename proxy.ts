@@ -282,6 +282,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
             }
           }
 
+          // Store metadata in side channel for extension lookup via message_end
+          if (responseMeta) storeResponseMeta(responseId, responseMeta);
+
           const finalReason = finishReason ?? (toolCallIndex >= 0 ? "tool_calls" : "stop");
           const finishChunk = { id: responseId, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: requestedModel, choices: [{ index: 0, delta: {}, finish_reason: finalReason }] };
           res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
@@ -338,8 +341,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           ? { role: "assistant" as const, content: collected, tool_calls: collectedToolCalls.map(tc => ({ id: tc.id, type: "function" as const, function: { name: tc.name, arguments: tc.args } })) }
           : { role: "assistant" as const, content: collected };
 
+        const responseId = `chatcmpl-${crypto.randomUUID()}`;
+        // Store metadata in side channel for extension lookup via message_end
+        if (responseMeta) storeResponseMeta(responseId, responseMeta);
+
         const resp: Record<string, unknown> = {
-          id: `chatcmpl-${crypto.randomUUID()}`,
+          id: responseId,
           object: "chat.completion",
           created: Math.floor(Date.now() / 1000),
           model: requestedModel,
@@ -367,6 +374,25 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 // ----------------------------------------------------------------------------
 // Server startup
 // ----------------------------------------------------------------------------
+
+// ----------------------------------------------------------------------------
+// Response metadata side channel
+// ----------------------------------------------------------------------------
+// Pi's AssistantMessage type doesn't preserve custom fields like _windsurf_meta.
+// Store metadata keyed by responseId so the extension can look it up in message_end.
+const responseMetaCache = new Map<string, ResponseMeta>();
+const META_CACHE_TTL_MS = 5 * 60 * 1000;
+
+export function storeResponseMeta(responseId: string, meta: ResponseMeta): void {
+  responseMetaCache.set(responseId, meta);
+  setTimeout(() => responseMetaCache.delete(responseId), META_CACHE_TTL_MS);
+}
+
+export function getResponseMeta(responseId: string): ResponseMeta | undefined {
+  const meta = responseMetaCache.get(responseId);
+  if (meta) responseMetaCache.delete(responseId);
+  return meta;
+}
 
 let serverInstance: ReturnType<typeof createServer> | null = null;
 

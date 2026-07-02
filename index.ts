@@ -8,7 +8,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks, ThinkingLevel, ModelThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
-import { startProxy, stopProxy, PROXY_SECRET, setProxyCredentials } from "./proxy";
+import { startProxy, stopProxy, PROXY_SECRET, setProxyCredentials, getResponseMeta } from "./proxy";
 import { loadCredentials, saveCredentials, deleteCredentials, DEFAULT_REGION, runLoginLoopback, registerUser, type PersistedCredentials } from "./oauth";
 import { clearCachedUserJwt } from "./auth";
 import { clearSessionIds } from "./chat";
@@ -279,12 +279,28 @@ export default async function (pi: ExtensionAPI) {
     }
   });
 
-  // Post-process tool results for Windsurf-specific formatting
-  pi.on("tool_result", async (event, ctx) => {
-    if (ctx.model?.provider !== "windsurf") return;
-    // Tools already handle truncation via Pi's built-in limits
-    // This handler is for Windsurf-specific formatting if needed
-    // Currently no formatting needed — pass through as-is
+  // Attach Windsurf response metadata to assistant messages.
+  // Pi's AssistantMessage doesn't preserve custom fields from the provider response,
+  // so the proxy stores metadata in a side channel keyed by responseId.
+  pi.on("message_end", async (event, ctx) => {
+    if (event.message.role !== "assistant" || ctx.model?.provider !== "windsurf") return;
+    const responseId = (event.message as any).responseId as string | undefined;
+    if (!responseId) return;
+    const meta = getResponseMeta(responseId);
+    if (!meta) return;
+    const serialized: Record<string, unknown> = {};
+    if (meta.outputId !== undefined) serialized.output_id = meta.outputId;
+    if (meta.requestId !== undefined) serialized.request_id = meta.requestId;
+    if (meta.actualModelUid !== undefined) serialized.actual_model_uid = meta.actualModelUid;
+    if (meta.messageId !== undefined) serialized.message_id = meta.messageId;
+    if (meta.inputTokens !== undefined) serialized.input_tokens = meta.inputTokens;
+    if (meta.outputTokens !== undefined) serialized.output_tokens = meta.outputTokens;
+    return {
+      message: {
+        ...event.message,
+        metadata: { ...(event.message as any).metadata, windsurf: serialized },
+      },
+    };
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
