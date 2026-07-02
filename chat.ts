@@ -445,6 +445,7 @@ export async function* streamChatEvents(req: CloudChatRequest): AsyncGenerator<C
     inferenceConfig: req.inferenceConfig,
   });
   const body = frameConnectStream(proto, true);
+  console.log(`[windsurf] model=${req.modelUid} resolved=${resolvedUid} router=${req.isModelRouter ?? false} tools=${req.tools?.length ?? 0} msgs=${req.messages.length} inferenceConfig=${req.inferenceConfig ? `variant=${req.inferenceConfig.variant}` : "none"} cascadeId=${sessionIds.cascadeId.slice(0,8)}`);
 
   const ttfbController = new AbortController();
   const ttfbTimer = setTimeout(() => ttfbController.abort(new Error(`TTFB timeout (${CLOUD_STREAM_TTFB_MS}ms)`)), CLOUD_STREAM_TTFB_MS);
@@ -467,6 +468,7 @@ export async function* streamChatEvents(req: CloudChatRequest): AsyncGenerator<C
   } finally {
     clearTimeout(ttfbTimer);
   }
+  console.log(`[windsurf] HTTP ${resp.status} ${resp.statusText} ${resp.headers.get("content-type") ?? "?"}`);
 
   if (!resp.ok) {
     const text = await resp.text();

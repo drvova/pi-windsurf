@@ -200,7 +200,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
       const requestedModel = requestBody.model || getDefaultModel();
       const variantOverride = extractVariantFromProviderOptions(requestBody.providerOptions);
-      const resolved = await resolveModelName(requestedModel + (variantOverride ? `:${variantOverride}` : ""), creds.apiKey, creds.apiServerUrl);
+      // Resolve the base model name without variant suffix — catalog UIDs don't include variant
+      const resolved = await resolveModelName(requestedModel, creds.apiKey, creds.apiServerUrl);
+      console.log(`[windsurf-proxy] model=${requestedModel}${variantOverride ? ` variant=${variantOverride}` : ""} → uid=${resolved.modelUid}`);
 
       const tools: ToolDef[] = (requestBody.tools ?? []).map(t => ({
         name: t.function?.name ?? "unknown",
