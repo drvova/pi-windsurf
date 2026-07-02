@@ -393,7 +393,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     if (url.pathname === "/v1/messages" || url.pathname === "/messages") {
       if (req.method !== "POST") {
         res.writeHead(405, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: { message: "Method not allowed; use POST." } }));
+        res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Method not allowed; use POST." } }));
         return;
       }
 
@@ -418,8 +418,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
       const requestedModel = anthroBody.model || getDefaultModel();
       const resolved = await resolveModelName(requestedModel, creds.apiKey, creds.apiServerUrl);
-
       const catalogMeta = await lookupCatalogMeta(creds.apiKey, creds.apiServerUrl, resolved.modelUid);
+      const catalogEntry = (await getCachedCatalog(creds.apiKey, creds.apiServerUrl))?.byUid.get(resolved.modelUid);
+      const catalogMaxTokens = catalogEntry?.maxOutputTokens && catalogEntry.maxOutputTokens > 0 ? catalogEntry.maxOutputTokens : 128_000;
 
       // Convert Anthropic messages to ChatHistoryItem[]
       const multimodalMessages: ChatHistoryItem[] = [];
@@ -433,7 +434,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         } else if (Array.isArray(m.content)) {
           const parts: ChatHistoryItem["content"] = [];
           for (const p of m.content) {
-            if (p.type === "text") parts.push({ type: "text", text: p.text });
+            if (p.type === "text") parts.push({ type: "text", text: p.text ?? "" });
             else if (p.type === "image" && p.source?.type === "base64") {
               parts.push({ type: "image", mimeType: p.source.media_type, base64Data: p.source.data });
             }
@@ -442,14 +443,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         }
       }
 
-      // Convert Anthropic tools to ToolDef[]
       const tools: ToolDef[] = (anthroBody.tools ?? []).map(t => ({
         name: t.name,
         description: t.description ?? "",
         parameters: t.input_schema ?? {},
       }));
 
-      const requestedMaxTokens = typeof anthroBody.max_tokens === "number" && anthroBody.max_tokens > 0 ? anthroBody.max_tokens : 128_000;
+      const requestedMaxTokens = typeof anthroBody.max_tokens === "number" && anthroBody.max_tokens > 0 ? anthroBody.max_tokens : catalogMaxTokens;
       const isStreaming = anthroBody.stream !== false;
 
       if (isStreaming) {
@@ -459,18 +459,25 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           "Connection": "keep-alive",
         });
 
-        const msgId = `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+        const msgId = `msg_${crypto.randomBytes(12).toString("hex")}`;
         const abort = new AbortController();
         req.on("close", () => { if (!res.writableEnded) abort.abort(); });
 
         try {
-          let hasContent = false;
-          let finishReason: "stop" | "tool_calls" | "length" | "content_filter" | null = null;
+          let blockIndex = 0;
+          let blockOpen = false;
+          let finishReason: string | null = null;
           let inputTokens = 0;
           let outputTokens = 0;
 
-          // message_start
-          res.write(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: msgId, type: "message", role: "assistant", content: [], model: requestedModel, stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`);
+          const writeSse = (event: string, data: object) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          const openTextBlock = () => { writeSse("content_block_start", { type: "content_block_start", index: blockIndex, content_block: { type: "text", text: "" } }); blockOpen = true; };
+          const closeBlock = () => { writeSse("content_block_stop", { type: "content_block_stop", index: blockIndex }); blockOpen = false; blockIndex++; };
+
+          writeSse("message_start", {
+            type: "message_start",
+            message: { id: msgId, type: "message", role: "assistant", content: [], model: requestedModel, stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } },
+          });
 
           for await (const ev of streamChatEvents({
             apiKey: creds.apiKey,
@@ -484,23 +491,25 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
             completionOpts: { maxOutputTokens: requestedMaxTokens },
           })) {
             if (ev.kind === "text") {
-              if (!hasContent) {
-                res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`);
-                hasContent = true;
-              }
-              res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: ev.text } })}\n\n`);
+              if (!blockOpen) openTextBlock();
+              writeSse("content_block_delta", { type: "content_block_delta", index: blockIndex, delta: { type: "text_delta", text: ev.text } });
             } else if (ev.kind === "reasoning") {
-              // Anthropic doesn't have reasoning blocks in the same way; ignore or append
+              if (!blockOpen) openTextBlock();
+              writeSse("content_block_delta", { type: "content_block_delta", index: blockIndex, delta: { type: "text_delta", text: ev.text } });
             } else if (ev.kind === "tool_call_start") {
-              if (hasContent) {
-                res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
-              }
-              // tool_use block
-              const toolIdx = hasContent ? 1 : 0;
-              hasContent = true; // mark that we have blocks
-              res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: toolIdx, content_block: { type: "tool_use", id: ev.id, name: ev.name, input: {} } })}\n\n`);
+              if (blockOpen) closeBlock();
+              writeSse("content_block_start", {
+                type: "content_block_start", index: blockIndex,
+                content_block: { type: "tool_use", id: ev.id, name: ev.name, input: {} },
+              });
+              blockOpen = true;
             } else if (ev.kind === "tool_call_args") {
-              // Anthropic streams tool input as JSON deltas
+              if (ev.argsDelta) {
+                writeSse("content_block_delta", {
+                  type: "content_block_delta", index: blockIndex,
+                  delta: { type: "input_json_delta", partial_json: ev.argsDelta },
+                });
+              }
             } else if (ev.kind === "finish") {
               finishReason = ev.reason;
             } else if (ev.kind === "usage") {
@@ -509,27 +518,31 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
             }
           }
 
-          if (hasContent) {
-            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
-          }
+          if (blockOpen) closeBlock();
 
           const stopReason = finishReason === "tool_calls" ? "tool_use" : finishReason === "length" ? "max_tokens" : "end_turn";
-          res.write(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
-          res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+          writeSse("message_delta", {
+            type: "message_delta",
+            delta: { stop_reason: stopReason, stop_sequence: null },
+            usage: { output_tokens: outputTokens },
+          });
+          writeSse("message_stop", { type: "message_stop" });
           res.end();
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : "Unknown error";
           try {
-            res.write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: errorMessage } })}\n\n`);
+            writeSse("error", { type: "error", error: { type: "api_error", message: errorMessage } });
             res.end();
           } catch { /* socket dead */ }
         }
       } else {
         // Non-streaming
         let collected = "";
-        let finishReason: "stop" | "tool_calls" | "length" | "content_filter" = "stop";
+        let finishReason: string | null = null;
         let inputTokens = 0;
         let outputTokens = 0;
+        const collectedToolCalls: Array<{ id: string; name: string; args: string }> = [];
+        let currentToolCall: { id: string; name: string; args: string } | null = null;
 
         const abort = new AbortController();
         for await (const ev of streamChatEvents({
@@ -544,22 +557,30 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           signal: abort.signal,
         })) {
           if (ev.kind === "text") collected += ev.text;
+          else if (ev.kind === "tool_call_start") { currentToolCall = { id: ev.id, name: ev.name, args: "" }; collectedToolCalls.push(currentToolCall); }
+          else if (ev.kind === "tool_call_args") { if (currentToolCall) currentToolCall.args += ev.argsDelta; }
           else if (ev.kind === "finish") finishReason = ev.reason;
           else if (ev.kind === "usage") { inputTokens = ev.promptTokens ?? 0; outputTokens = ev.completionTokens ?? 0; }
         }
 
-        const stopReason = finishReason === "tool_calls" ? "tool_use" : finishReason === "length" ? "max_tokens" : "end_turn";
-        const resp = {
+        const contentBlocks: Array<Record<string, unknown>> = [];
+        if (collected) contentBlocks.push({ type: "text", text: collected });
+        for (const tc of collectedToolCalls) {
+          let input: unknown = {};
+          try { input = JSON.parse(tc.args); } catch { input = { raw: tc.args }; }
+          contentBlocks.push({ type: "tool_use", id: tc.id, name: tc.name, input });
+        }
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
           id: msgId,
           type: "message",
           role: "assistant",
-          content: [{ type: "text", text: collected }],
+          content: contentBlocks,
           model: requestedModel,
-          stop_reason: stopReason,
+          stop_reason: collectedToolCalls.length > 0 ? "tool_use" : (finishReason === "length" ? "max_tokens" : "end_turn"),
           usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-        };
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(resp));
+        }));
       }
       return;
     }
