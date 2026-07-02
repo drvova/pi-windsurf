@@ -20,8 +20,8 @@ import type { InferenceConfig } from "./catalog";
 // Types
 // ----------------------------------------------------------------------------
 
-const CLOUD_STREAM_IDLE_MS = 120_000;
-const CLOUD_STREAM_TTFB_MS = 120_000;
+const CLOUD_STREAM_IDLE_MS = 300_000;
+const CLOUD_STREAM_TTFB_MS = 300_000;
 
 export type ContentPart =
   | { type: "text"; text: string }
