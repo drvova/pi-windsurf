@@ -17,45 +17,6 @@ import { getUserStatus, clearAssignmentCache, type UserStatus } from "./assign";
 
 let _pi: ExtensionAPI | null = null;
 
-/** Pi's native thinking levels. Derived from Pi's API definition — not business logic. */
-const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
-
-/** Map Pi level words that appear in catalog labels to Pi level identifiers. */
-const LABEL_TO_PI_LEVEL: Record<string, string> = {
-  "no": "off",
-  "minimal": "minimal",
-  "low": "low",
-  "medium": "medium",
-  "high": "high",
-  "xhigh": "xhigh",
-  "x-high": "xhigh",
-};
-
-/**
- * Build a Pi thinkingLevelMap from a catalog label.
- * Finds which thinking level word appears in the label,
- * then sets only that level as supported (others = null = hidden).
- * Data-driven: derives from catalog label content.
- */
-function buildThinkingLevelMap(label: string): Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh", string | null>> {
-  const labelLower = label.toLowerCase();
-  // Find which level this label matches (longest match first to avoid "high" matching "xhigh")
-  let matchedPiLevel: string | null = null;
-  const sortedWords = Object.keys(LABEL_TO_PI_LEVEL).sort((a, b) => b.length - a.length);
-  for (const word of sortedWords) {
-    if (labelLower.includes(word)) {
-      matchedPiLevel = LABEL_TO_PI_LEVEL[word];
-      break;
-    }
-  }
-  // Build map: only the matched level is supported, all others null (hidden)
-  const map: Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh", string | null>> = {};
-  for (const level of PI_THINKING_LEVELS) {
-    map[level] = matchedPiLevel === level ? level : null;
-  }
-  return map;
-}
-
 /** Build a Pi model definition from a catalog entry. */
 function catalogModelToPi(m: ModelCatalogEntry) {
   const ctx = m.contextWindow ?? 0;
@@ -69,12 +30,10 @@ function catalogModelToPi(m: ModelCatalogEntry) {
   const tagStr = tags.length > 0 ? ` [${tags.join(" ")}]` : "";
   const ctxStr = ctx > 0 ? ` (${ctx >= 1_000_000 ? `${Math.round(ctx / 1_000_000)}M` : `${Math.round(ctx / 1_000)}K`})` : "";
   const f = m.features;
-  const supportsThinking = f?.supportsThinking ?? true;
   return {
     id: m.modelUid,
     name: `${m.label}${tagStr}${ctxStr}`,
-    reasoning: supportsThinking,
-    thinkingLevelMap: supportsThinking ? buildThinkingLevelMap(m.label) : undefined,
+    reasoning: f?.supportsThinking ?? true,
     input: ["text", ...(f?.supportsImageCaptions !== false ? ["image"] : [])] as ("text" | "image")[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: ctx || 1,
