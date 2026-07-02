@@ -49,12 +49,9 @@ async function fetchDynamicModels(apiKey: string, apiServerUrl: string): Promise
       const models = [...catalog.byUid.values()]
         .filter((m) => !m.disabled)
         .map(catalogModelToPi);
-      console.error(`[windsurf] loaded ${models.length} models from catalog`);
       return models;
     }
-  } catch (e) {
-    console.error(`[windsurf] catalog fetch failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  } catch {}
   return [];
 }
 
@@ -123,7 +120,7 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  console.error(hasCreds ? `[windsurf] connected — ${models.length} models` : `[windsurf] /login windsurf to connect`);
+
 
   pi.registerCommand("windsurf-status", {
     description: "Show Windsurf auth status, plan, and quota",
