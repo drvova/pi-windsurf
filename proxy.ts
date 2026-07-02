@@ -8,7 +8,7 @@
 import * as crypto from "crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { streamChatEvents, CloudChatError, type ChatHistoryItem, type ToolDef, type ResponseMeta } from "./chat";
-import { resolveModelOrPassthrough, getDefaultModel, getCanonicalModels } from "./models";
+import { resolveModelOrPassthrough, resolveModelName, getDefaultModel, getCanonicalModels } from "./models";
 import { loadCredentials } from "./oauth";
 import { getCachedCatalog, type InferenceConfig } from "./catalog";
 
@@ -200,7 +200,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
       const requestedModel = requestBody.model || getDefaultModel();
       const variantOverride = extractVariantFromProviderOptions(requestBody.providerOptions);
-      const resolved = resolveModelOrPassthrough(requestedModel + (variantOverride ? `:${variantOverride}` : ""));
+      const resolved = await resolveModelName(requestedModel + (variantOverride ? `:${variantOverride}` : ""), creds.apiKey, creds.apiServerUrl);
 
       const tools: ToolDef[] = (requestBody.tools ?? []).map(t => ({
         name: t.function?.name ?? "unknown",
