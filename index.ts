@@ -129,6 +129,7 @@ export default async function (pi: ExtensionAPI) {
 
   const proxyPort = await startProxy();
   const baseUrl = `http://127.0.0.1:${proxyPort}/v1`;
+  const anthropicBaseUrl = `http://127.0.0.1:${proxyPort}`; // Anthropic SDK appends /v1/messages
 
   let hasCreds = false;
   try {
@@ -170,7 +171,7 @@ export default async function (pi: ExtensionAPI) {
   // Register Anthropic Messages provider (Pi sends Anthropic format -> /v1/messages)
   pi.registerProvider("windsurf-anthropic", {
     name: "Cognition (Windsurf Anthropic)",
-    baseUrl, apiKey: PROXY_SECRET, api: "anthropic-messages", authHeader: true,
+    baseUrl: anthropicBaseUrl, apiKey: PROXY_SECRET, api: "anthropic-messages", authHeader: true,
     models,
     compat: {
       supportsDeveloperRole: false,
