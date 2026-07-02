@@ -34,17 +34,16 @@ function buildThinkingLevelMap(label: string, familySize: number): ThinkingLevel
     ["minimal", ["minimal"]],
     ["xhigh", ["xhigh", "x-high"]],
   ];
-  let matched: ModelThinkingLevel = "off";
+  let matched: ThinkingLevel | null = null;
   for (const [piLevel, words] of levels) {
     if (words.some((w) => l.includes(w))) { matched = piLevel; break; }
   }
-  if (matched === "off") return undefined;
-  const map: ThinkingLevelMap = {};
+  if (!matched) return undefined;
+  const map: ThinkingLevelMap = { off: null };
   map[matched] = matched;
   for (const [piLevel] of levels) {
     if (piLevel !== matched) map[piLevel] = null;
   }
-  map.off = null;
   return map;
 }
 
