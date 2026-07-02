@@ -228,7 +228,7 @@ function encodeChatMessagePrompt(
   return Buffer.concat(parts);
 }
 
-const SOURCE_BY_ROLE: Record<string, number> = { user: 1, assistant: 2, system: 1, tool: 4 };
+const SOURCE_BY_ROLE: Record<string, number> = { user: 1, assistant: 2, system: 1, developer: 1, tool: 4 };
 
 function encodeCompletionConfiguration(opts: {
   maxOutputTokens?: number; maxInputTokens?: number; temperature?: number; topK?: number; topP?: number;

@@ -152,7 +152,7 @@ export default async function (pi: ExtensionAPI) {
     baseUrl, apiKey: PROXY_SECRET, api: "openai-completions", authHeader: true,
     models,
     compat: {
-      supportsDeveloperRole: false,
+      supportsDeveloperRole: true,        // OpenAI format supports developer role; proxy maps to user (source=1)
       supportsReasoningEffort: false,
       maxTokensField: "max_tokens",
       requiresToolResultName: false,
