@@ -43,6 +43,24 @@ interface ChatCompletionRequest {
   providerOptions?: Record<string, unknown>;
 }
 
+interface AnthropicMessage {
+  role: "user" | "assistant";
+  content: string | Array<{ type: string; text?: string; source?: { type: string; media_type: string; data: string } }>;
+}
+
+interface AnthropicRequest {
+  model?: string;
+  messages: AnthropicMessage[];
+  system?: string | Array<{ type: string; text: string }>;
+  max_tokens?: number;
+  stream?: boolean;
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  stop_sequences?: string[];
+  tools?: Array<{ name: string; description?: string; input_schema?: Record<string, unknown> }>;
+}
+
 function mapMessageToHistoryItem(m: ChatCompletionRequest["messages"][number]): ChatHistoryItem {
   const item: ChatHistoryItem = { role: m.role as ChatHistoryItem["role"], content: m.content as ChatHistoryItem["content"] };
   if (m.role === "tool" && typeof m.tool_call_id === "string" && m.tool_call_id.length > 0) {
@@ -365,6 +383,181 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           ...(usage ? { usage: { prompt_tokens: usage.promptTokens ?? 0, completion_tokens: usage.completionTokens ?? 0, total_tokens: usage.totalTokens ?? 0 } } : {}),
         };
         if (responseMeta) resp["_windsurf_meta"] = serializeResponseMeta(responseMeta);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(resp));
+      }
+      return;
+    }
+
+    // /v1/messages — Anthropic Messages API
+    if (url.pathname === "/v1/messages" || url.pathname === "/messages") {
+      if (req.method !== "POST") {
+        res.writeHead(405, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "Method not allowed; use POST." } }));
+        return;
+      }
+
+      const rawBody = await getBody(req);
+      let anthroBody: AnthropicRequest;
+      try { anthroBody = JSON.parse(rawBody); }
+      catch { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Malformed JSON." } })); return; }
+
+      if (!anthroBody.messages || !Array.isArray(anthroBody.messages)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "messages must be an array." } }));
+        return;
+      }
+
+      const diskCreds = loadCredentials();
+      const creds = diskCreds ?? proxyCredentials;
+      if (!creds) {
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: "Not authenticated. Run /login windsurf first." } }));
+        return;
+      }
+
+      const requestedModel = anthroBody.model || getDefaultModel();
+      const resolved = await resolveModelName(requestedModel, creds.apiKey, creds.apiServerUrl);
+
+      const catalogMeta = await lookupCatalogMeta(creds.apiKey, creds.apiServerUrl, resolved.modelUid);
+
+      // Convert Anthropic messages to ChatHistoryItem[]
+      const multimodalMessages: ChatHistoryItem[] = [];
+      if (anthroBody.system) {
+        const sysText = typeof anthroBody.system === "string" ? anthroBody.system : anthroBody.system.map(p => p.text).join("\n");
+        multimodalMessages.push({ role: "system", content: sysText });
+      }
+      for (const m of anthroBody.messages) {
+        if (typeof m.content === "string") {
+          multimodalMessages.push({ role: m.role as ChatHistoryItem["role"], content: m.content });
+        } else if (Array.isArray(m.content)) {
+          const parts: ChatHistoryItem["content"] = [];
+          for (const p of m.content) {
+            if (p.type === "text") parts.push({ type: "text", text: p.text });
+            else if (p.type === "image" && p.source?.type === "base64") {
+              parts.push({ type: "image", mimeType: p.source.media_type, base64Data: p.source.data });
+            }
+          }
+          multimodalMessages.push({ role: m.role as ChatHistoryItem["role"], content: parts });
+        }
+      }
+
+      // Convert Anthropic tools to ToolDef[]
+      const tools: ToolDef[] = (anthroBody.tools ?? []).map(t => ({
+        name: t.name,
+        description: t.description ?? "",
+        parameters: t.input_schema ?? {},
+      }));
+
+      const requestedMaxTokens = typeof anthroBody.max_tokens === "number" && anthroBody.max_tokens > 0 ? anthroBody.max_tokens : 128_000;
+      const isStreaming = anthroBody.stream !== false;
+
+      if (isStreaming) {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        });
+
+        const msgId = `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+        const abort = new AbortController();
+        req.on("close", () => { if (!res.writableEnded) abort.abort(); });
+
+        try {
+          let hasContent = false;
+          let finishReason: "stop" | "tool_calls" | "length" | "content_filter" | null = null;
+          let inputTokens = 0;
+          let outputTokens = 0;
+
+          // message_start
+          res.write(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: msgId, type: "message", role: "assistant", content: [], model: requestedModel, stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`);
+
+          for await (const ev of streamChatEvents({
+            apiKey: creds.apiKey,
+            apiServerUrl: creds.apiServerUrl,
+            modelUid: resolved.modelUid,
+            isModelRouter: catalogMeta.isModelRouter,
+            inferenceConfig: catalogMeta.inferenceConfig,
+            messages: multimodalMessages,
+            tools: tools.length > 0 ? tools : undefined,
+            signal: abort.signal,
+            completionOpts: { maxOutputTokens: requestedMaxTokens },
+          })) {
+            if (ev.kind === "text") {
+              if (!hasContent) {
+                res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`);
+                hasContent = true;
+              }
+              res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: ev.text } })}\n\n`);
+            } else if (ev.kind === "reasoning") {
+              // Anthropic doesn't have reasoning blocks in the same way; ignore or append
+            } else if (ev.kind === "tool_call_start") {
+              if (hasContent) {
+                res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+              }
+              // tool_use block
+              const toolIdx = hasContent ? 1 : 0;
+              hasContent = true; // mark that we have blocks
+              res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: toolIdx, content_block: { type: "tool_use", id: ev.id, name: ev.name, input: {} } })}\n\n`);
+            } else if (ev.kind === "tool_call_args") {
+              // Anthropic streams tool input as JSON deltas
+            } else if (ev.kind === "finish") {
+              finishReason = ev.reason;
+            } else if (ev.kind === "usage") {
+              inputTokens = ev.promptTokens ?? 0;
+              outputTokens = ev.completionTokens ?? 0;
+            }
+          }
+
+          if (hasContent) {
+            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+          }
+
+          const stopReason = finishReason === "tool_calls" ? "tool_use" : finishReason === "length" ? "max_tokens" : "end_turn";
+          res.write(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
+          res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+          res.end();
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : "Unknown error";
+          try {
+            res.write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: errorMessage } })}\n\n`);
+            res.end();
+          } catch { /* socket dead */ }
+        }
+      } else {
+        // Non-streaming
+        let collected = "";
+        let finishReason: "stop" | "tool_calls" | "length" | "content_filter" = "stop";
+        let inputTokens = 0;
+        let outputTokens = 0;
+
+        const abort = new AbortController();
+        for await (const ev of streamChatEvents({
+          apiKey: creds.apiKey,
+          apiServerUrl: creds.apiServerUrl,
+          modelUid: resolved.modelUid,
+          isModelRouter: catalogMeta.isModelRouter,
+          inferenceConfig: catalogMeta.inferenceConfig,
+          messages: multimodalMessages,
+          tools: tools.length > 0 ? tools : undefined,
+          completionOpts: { maxOutputTokens: requestedMaxTokens },
+          signal: abort.signal,
+        })) {
+          if (ev.kind === "text") collected += ev.text;
+          else if (ev.kind === "finish") finishReason = ev.reason;
+          else if (ev.kind === "usage") { inputTokens = ev.promptTokens ?? 0; outputTokens = ev.completionTokens ?? 0; }
+        }
+
+        const stopReason = finishReason === "tool_calls" ? "tool_use" : finishReason === "length" ? "max_tokens" : "end_turn";
+        const resp = {
+          id: msgId,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: collected }],
+          model: requestedModel,
+          stop_reason: stopReason,
+          usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+        };
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(resp));
       }
