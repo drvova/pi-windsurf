@@ -17,8 +17,56 @@ import { getUserStatus, clearAssignmentCache, type UserStatus } from "./assign";
 
 let _pi: ExtensionAPI | null = null;
 
+/**
+ * Build thinkingLevelMap for a catalog entry by comparing it against siblings
+ * in the same model family. Level words are discovered from the catalog itself.
+ */
+function buildThinkingLevelMap(
+  entry: ModelCatalogEntry,
+  familyEntries: ModelCatalogEntry[],
+): Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh", string | null>> | undefined {
+  if (familyEntries.length <= 1) return undefined;
+
+  // Find words that differentiate siblings (appear in some but not all)
+  const siblingLabels = familyEntries.map((e) => e.label.toLowerCase());
+  const allWords = new Set(siblingLabels.flatMap((l) => l.split(/\s+/)));
+  const PI_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+  // Discover level words: words appearing in some siblings but not all
+  const levelWordToPi = new Map<string, string>();
+  for (const word of allWords) {
+    const count = siblingLabels.filter((l) => l.split(/\s+/).includes(word)).length;
+    if (count > 1 && count < siblingLabels.length) {
+      // This word is a level differentiator — check if it matches a Pi level
+      const piLevel = PI_LEVELS.find((l) => word === l);
+      if (piLevel) levelWordToPi.set(word, piLevel);
+    }
+  }
+
+  if (levelWordToPi.size === 0) return undefined;
+
+  // Find which level this entry matches
+  const entryWords = new Set(entry.label.toLowerCase().split(/\s+/));
+  let matchedPiLevel: string | null = null;
+  for (const [word, piLevel] of levelWordToPi) {
+    if (entryWords.has(word)) {
+      matchedPiLevel = piLevel;
+      break;
+    }
+  }
+
+  if (!matchedPiLevel) return undefined;
+
+  // Build map: only the matched level is supported, all others null (hidden)
+  const map: Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh", string | null>> = {};
+  for (const level of PI_LEVELS) {
+    map[level] = matchedPiLevel === level ? level : null;
+  }
+  return map;
+}
+
 /** Build a Pi model definition from a catalog entry. */
-function catalogModelToPi(m: ModelCatalogEntry) {
+function catalogModelToPi(m: ModelCatalogEntry, familyEntries: ModelCatalogEntry[]) {
   const ctx = m.contextWindow ?? 0;
   const maxOut = m.maxOutputTokens ?? 0;
   const isFree = !m.hasPricing;
@@ -34,6 +82,7 @@ function catalogModelToPi(m: ModelCatalogEntry) {
     id: m.modelUid,
     name: `${m.label}${tagStr}${ctxStr}`,
     reasoning: f?.supportsThinking ?? true,
+    thinkingLevelMap: buildThinkingLevelMap(m, familyEntries),
     input: ["text", ...(f?.supportsImageCaptions !== false ? ["image"] : [])] as ("text" | "image")[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: ctx || 1,
@@ -46,10 +95,19 @@ async function fetchDynamicModels(apiKey: string, apiServerUrl: string): Promise
   try {
     const catalog = await getCachedCatalog(apiKey, apiServerUrl);
     if (catalog && catalog.byUid.size > 0) {
-      const models = [...catalog.byUid.values()]
-        .filter((m) => !m.disabled)
-        .map(catalogModelToPi);
-      return models;
+      const entries = [...catalog.byUid.values()].filter((m) => !m.disabled);
+      // Group by server-provided modelFamilyUid (proto field 26)
+      const families = new Map<string, ModelCatalogEntry[]>();
+      for (const entry of entries) {
+        const fam = entry.modelFamilyUid || entry.modelUid;
+        const existing = families.get(fam);
+        if (existing) existing.push(entry);
+        else families.set(fam, [entry]);
+      }
+      return entries.map((m) => {
+        const fam = m.modelFamilyUid || m.modelUid;
+        return catalogModelToPi(m, families.get(fam) ?? [m]);
+      });
     }
   } catch {}
   return [];
