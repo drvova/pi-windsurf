@@ -422,6 +422,36 @@ export default async function (pi: ExtensionAPI) {
     return { messages };
   });
 
+  // -- session_before_compact: add Windsurf status to compaction context --
+  pi.on("session_before_compact", async (event, ctx) => {
+    if (ctx.model?.provider !== "windsurf") return;
+    // Don't cancel compaction - just observe. Windsurf status survives via appendEntry.
+    // The session_compact handler will re-inject status after compaction.
+  });
+
+  // -- session_compact: re-inject Windsurf status after compaction --
+  pi.on("session_compact", async (event, ctx) => {
+    if (ctx.model?.provider !== "windsurf") return;
+    // After compaction, the LLM loses context about Windsurf plan/quota.
+    // Re-inject via sendMessage so the LLM has this info in the new context.
+    const c = loadCredentials();
+    if (!c) return;
+    try {
+      const status = await getUserStatus(c.apiKey, c.apiServerUrl);
+      const parts: string[] = [];
+      if (status.planName) parts.push(`Plan: ${status.planName}`);
+      if (status.availablePromptCredits !== undefined) parts.push(`Credits: ${status.availablePromptCredits}/${status.monthlyPromptCredits ?? "?"}`);
+      if (status.dailyQuotaRemainingPercent !== undefined) parts.push(`Daily: ${status.dailyQuotaRemainingPercent}%`);
+      if (parts.length > 0) {
+        pi.sendMessage({
+          customType: "windsurf-context",
+          content: `After compaction: Windsurf ${parts.join(", ")}.`,
+          display: false,
+        }, { deliverAs: "followUp" });
+      }
+    } catch {}
+  });
+
   pi.on("session_shutdown", async (_event, ctx) => {
     ctx.ui.setStatus("windsurf", undefined);
     _pi = null;
