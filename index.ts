@@ -279,6 +279,57 @@ export default async function (pi: ExtensionAPI) {
     }
   });
 
+  // Post-process tool results for better Windsurf consumption
+  pi.on("tool_result", async (event, ctx) => {
+    if (ctx.model?.provider !== "windsurf") return;
+
+    const content = event.content;
+    if (!Array.isArray(content) || content.length === 0) return;
+
+    // Truncate large tool results to prevent context overflow
+    const MAX_CONTENT_CHARS = 50_000;
+    let totalChars = 0;
+    let needsTruncation = false;
+
+    for (const block of content) {
+      if (block.type === "text" && typeof block.text === "string") {
+        totalChars += block.text.length;
+        if (totalChars > MAX_CONTENT_CHARS) {
+          needsTruncation = true;
+          break;
+        }
+      }
+    }
+
+    if (!needsTruncation) return;
+
+    // Truncate: keep first MAX_CONTENT_CHARS chars, append truncation notice
+    const truncated: typeof content = [];
+    let remaining = MAX_CONTENT_CHARS;
+
+    for (const block of content) {
+      if (block.type === "text" && typeof block.text === "string") {
+        if (remaining <= 0) break;
+        if (block.text.length <= remaining) {
+          truncated.push(block);
+          remaining -= block.text.length;
+        } else {
+          truncated.push({ type: "text", text: block.text.slice(0, remaining) });
+          remaining = 0;
+        }
+      } else {
+        truncated.push(block);
+      }
+    }
+
+    truncated.push({
+      type: "text",
+      text: `\n\n[Truncated: tool result exceeded ${MAX_CONTENT_CHARS.toLocaleString()} chars]`,
+    });
+
+    return { content: truncated };
+  });
+
   pi.on("session_shutdown", async (_event, ctx) => {
     ctx.ui.setStatus("windsurf", undefined);
     _pi = null;
