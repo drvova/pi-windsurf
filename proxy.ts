@@ -346,6 +346,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         let currentToolCall: CollectedToolCall | null = null;
 
         const abort = new AbortController();
+        req.on("close", () => { if (!res.writableEnded) abort.abort(); });
         for await (const ev of streamChatEvents({
           apiKey: creds.apiKey,
           apiServerUrl: creds.apiServerUrl,
@@ -536,7 +537,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           try {
             writeSse("error", { type: "error", error: { type: "api_error", message: errorMessage } });
             res.end();
-          } catch { /* socket dead */ }
+          } catch (writeErr) { /* client disconnected */ }
         }
       } else {
         // Non-streaming

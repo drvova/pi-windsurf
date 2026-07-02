@@ -507,21 +507,17 @@ export async function* streamChatEvents(req: CloudChatRequest): AsyncGenerator<C
   try {
     const resetIdle = (): Promise<{ value?: Uint8Array; done: boolean }> => {
       if (idleTimer) clearTimeout(idleTimer);
-      const idleController = new AbortController();
-      idleTimer = setTimeout(
-        () => idleController.abort(new Error(`Idle timeout (${CLOUD_STREAM_IDLE_MS}ms)`)),
-        CLOUD_STREAM_IDLE_MS,
-      );
       return new Promise((resolve, reject) => {
         let settled = false;
         const settle = (fn: () => void): void => { if (settled) return; settled = true; fn(); };
-        const readP = reader.read();
-        readP.catch(() => {});
-        idleController.signal.addEventListener("abort", () => {
-          try { void reader.cancel(idleController.signal.reason ?? new Error("idle abort")); } catch {}
-          settle(() => reject(idleController.signal.reason ?? new Error("idle abort")));
-        }, { once: true });
-        readP.then(v => settle(() => resolve(v)), e => settle(() => reject(e)));
+        const timer = setTimeout(
+          () => settle(() => reject(new Error(`Idle timeout (${CLOUD_STREAM_IDLE_MS}ms)`))),
+          CLOUD_STREAM_IDLE_MS,
+        );
+        reader.read().then(
+          v => { clearTimeout(timer); settle(() => resolve(v)); },
+          e => { clearTimeout(timer); settle(() => reject(e)); },
+        );
       });
     };
 
