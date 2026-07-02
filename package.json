@@ -28,6 +28,9 @@
     "README.md",
     "LICENSE"
   ],
+  "dependencies": {
+    "@earendil-works/pi-ai": "latest"
+  },
   "devDependencies": {
     "@types/node": "^26.0.1"
   }

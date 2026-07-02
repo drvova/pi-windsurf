@@ -7,7 +7,7 @@
  * Usage: /login windsurf → /model windsurf/<id>
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import type { OAuthCredentials, OAuthLoginCallbacks, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { startProxy, stopProxy, PROXY_SECRET, setProxyCredentials } from "./proxy";
 import { loadCredentials, saveCredentials, deleteCredentials, DEFAULT_REGION, runLoginLoopback, registerUser, type PersistedCredentials } from "./oauth";
 import { clearCachedUserJwt } from "./auth";
@@ -19,8 +19,37 @@ let _pi: ExtensionAPI | null = null;
 
 
 
+/** Pi's native thinking levels — imported from @earendil-works/pi-ai. */
+import type { ThinkingLevel, ModelThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
+
+/** Build thinkingLevelMap from catalog label by finding which level word it contains. */
+function buildThinkingLevelMap(label: string, familySize: number): ThinkingLevelMap | undefined {
+  if (familySize <= 1) return undefined;
+  const l = label.toLowerCase();
+  // Pi's native level identifiers — from @earendil-works/pi-ai
+  const levels: [ThinkingLevel, string[]][] = [
+    ["high", ["high"]],
+    ["low", ["low"]],
+    ["medium", ["medium"]],
+    ["minimal", ["minimal"]],
+    ["xhigh", ["xhigh", "x-high"]],
+  ];
+  let matched: ModelThinkingLevel = "off";
+  for (const [piLevel, words] of levels) {
+    if (words.some((w) => l.includes(w))) { matched = piLevel; break; }
+  }
+  if (matched === "off") return undefined;
+  const map: ThinkingLevelMap = {};
+  map[matched] = matched;
+  for (const [piLevel] of levels) {
+    if (piLevel !== matched) map[piLevel] = null;
+  }
+  map.off = null;
+  return map;
+}
+
 /** Build a Pi model definition from a catalog entry. */
-function catalogModelToPi(m: ModelCatalogEntry) {
+function catalogModelToPi(m: ModelCatalogEntry, familySize: number) {
   const ctx = m.contextWindow ?? 0;
   const maxOut = m.maxOutputTokens ?? 0;
   const isFree = !m.hasPricing;
@@ -36,6 +65,7 @@ function catalogModelToPi(m: ModelCatalogEntry) {
     id: m.modelUid,
     name: `${m.label}${tagStr}${ctxStr}`,
     reasoning: f?.supportsThinking ?? true,
+    thinkingLevelMap: buildThinkingLevelMap(m.label, familySize),
     input: ["text", ...(f?.supportsImageCaptions !== false ? ["image"] : [])] as ("text" | "image")[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: ctx || 1,
@@ -48,9 +78,17 @@ async function fetchDynamicModels(apiKey: string, apiServerUrl: string): Promise
   try {
     const catalog = await getCachedCatalog(apiKey, apiServerUrl);
     if (catalog && catalog.byUid.size > 0) {
-      return [...catalog.byUid.values()]
-        .filter((m) => !m.disabled)
-        .map(catalogModelToPi);
+      const entries = [...catalog.byUid.values()].filter((m) => !m.disabled);
+      // Group by modelFamilyUid (proto field 26)
+      const families = new Map<string, number>();
+      for (const entry of entries) {
+        const fam = entry.modelFamilyUid || entry.modelUid;
+        families.set(fam, (families.get(fam) || 0) + 1);
+      }
+      return entries.map((m) => {
+        const fam = m.modelFamilyUid || m.modelUid;
+        return catalogModelToPi(m, families.get(fam) || 1);
+      });
     }
   } catch {}
   return [];
