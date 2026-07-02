@@ -314,25 +314,6 @@ export default async function (pi: ExtensionAPI) {
     }
   });
 
-  // -- entryRenderer: Windsurf status card in chat transcript --
-  pi.registerEntryRenderer("windsurf-status", (entry, { expanded }, theme) => {
-    const d = entry.data as Record<string, unknown> | undefined;
-    if (!d) return { render: () => [], invalidate: () => {} };
-    const lines: string[] = [];
-    const plan = d.planName ? String(d.planName) : "unknown";
-    const credits = d.availablePromptCredits !== undefined && d.monthlyPromptCredits !== undefined
-      ? `Credits: ${d.availablePromptCredits}/${d.monthlyPromptCredits}`
-      : "";
-    const daily = d.dailyQuotaRemainingPercent !== undefined ? `Daily: ${d.dailyQuotaRemainingPercent}%` : "";
-    lines.push(theme.fg("accent", `Windsurf`) + theme.fg("dim", ` ${plan}`) + (credits ? ` ${theme.fg("muted", credits)}` : "") + (daily ? ` ${theme.fg("muted", daily)}` : ""));
-    if (expanded) {
-      const flow = d.availableFlowCredits !== undefined && d.monthlyFlowCredits !== undefined ? `Flow: ${d.availableFlowCredits}/${d.monthlyFlowCredits}` : "";
-      const weekly = d.weeklyQuotaRemainingPercent !== undefined ? `Weekly: ${d.weeklyQuotaRemainingPercent}%` : "";
-      if (flow || weekly) lines.push(theme.fg("dim", `  ${flow}${flow && weekly ? "  " : ""}${weekly}`));
-    }
-    return { render: () => lines, invalidate: () => {} };
-  });
-
   // -- messageRenderer: Windsurf context messages in chat transcript --
   pi.registerMessageRenderer("windsurf-context", (message, { expanded }, theme) => {
     const content = message.content || "";
