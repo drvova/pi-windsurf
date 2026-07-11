@@ -16,6 +16,7 @@ import { clearSessionIds } from "./chat";
 import { clearCachedCatalog, getCachedCatalog, type ModelCatalogEntry, type ModelFeatures } from "./catalog";
 import { getUserStatus, clearAssignmentCache } from "./assign";
 import { windsurfEventBus } from "./event-log";
+import { recordChatUsage, getChatUsage, resetChatUsage, formatChatUsage, type ChatUsageStats } from "./stats";
 
 let _pi: ExtensionAPI | null = null;
 let _apiKey = "";
@@ -220,6 +221,8 @@ export default async function (pi: ExtensionAPI) {
         if (status.weeklyQuotaRemainingPercent !== undefined) parts.push(`Weekly: ${status.weeklyQuotaRemainingPercent}%`);
         if (status.canUseCascade === false) parts.push("Cascade: disabled");
         if (status.canUseCli === false) parts.push("CLI: disabled");
+        const usage = getChatUsage();
+        if (usage.requests > 0) parts.push(`Session: ${usage.requests} req, ${usage.total} tokens`);
         ctx.ui.notify(`Windsurf: ${parts.join(" | ")}`, "info");
       } catch (e) {
         ctx.ui.notify(`Windsurf: authenticated (${c.apiServerUrl}) but status fetch failed: ${e instanceof Error ? e.message : String(e)}`, "warning");
@@ -231,6 +234,7 @@ export default async function (pi: ExtensionAPI) {
     description: "Sign out of Windsurf",
     handler: async (_args, ctx) => {
       const ok = deleteCredentials();
+      resetChatUsage();
       setProxyCredentials(null);
       clearCachedUserJwt(); clearSessionIds(); clearCachedCatalog(); clearAssignmentCache();
       pi.unregisterProvider("windsurf");
@@ -261,7 +265,14 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  // -- registerTool: windsurf_status — LLM-callable tool to query plan/quota --
+  pi.registerCommand("windsurf-usage", {
+    description: "Show session Windsurf usage statistics",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify(formatChatUsage(getChatUsage()).replace(/\n/g, " | "), "info");
+    },
+  });
+
+  // -- registerTool: windsurf_status - LLM-callable tool to query plan/quota --
   pi.registerTool({
     name: "windsurf_status",
     label: "Windsurf Status",
@@ -292,6 +303,7 @@ export default async function (pi: ExtensionAPI) {
         }
         if (status.canUseCascade === false) lines.push("Cascade: disabled");
         if (status.canUseCli === false) lines.push("CLI: disabled");
+        lines.push(formatChatUsage(getChatUsage()));
         return { content: [{ type: "text", text: lines.join("\n") }], details: {} };
       } catch (e) {
         return { content: [{ type: "text", text: `Failed to fetch Windsurf status: ${e instanceof Error ? e.message : String(e)}` }], details: {} };
@@ -393,7 +405,19 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("after_provider_response", async (event, ctx) => {
+    const modelId = ctx.model?.id ?? "unknown";
+    const success = event.status >= 200 && event.status < 300;
+    if (ctx.model?.provider === "windsurf" && event.usage && typeof event.usage === "object") {
+      recordChatUsage(modelId, success, {
+        promptTokens: (event.usage as Record<string, number>).prompt_tokens,
+        completionTokens: (event.usage as Record<string, number>).completion_tokens,
+        totalTokens: (event.usage as Record<string, number>).total_tokens,
+        cachedInputTokens: (event.usage as Record<string, number>).cache_read_input_tokens,
+        cacheCreationInputTokens: (event.usage as Record<string, number>).cache_creation_input_tokens,
+      });
+    }
     if (ctx.model?.provider !== "windsurf") return;
+    if (success) recordChatUsage(modelId, success, null);
     ctx.ui.setWorkingMessage();
     if (event.status === 429) {
       const retryAfter = event.headers?.["retry-after"];

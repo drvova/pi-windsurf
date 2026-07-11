@@ -25,6 +25,7 @@
   },
   "files": [
     "*.ts",
+    "vendor",
     "README.md",
     "LICENSE"
   ],
